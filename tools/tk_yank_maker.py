@@ -13,12 +13,7 @@ import tkinter as tk
 from collections import OrderedDict
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from typing import Any, Dict, List, Optional, Tuple
-
-try:  # Optional dependency for loading existing YAML files.
-    import yaml
-except ImportError:  # pragma: no cover - Tkinter tool
-    yaml = None
+from typing import Any, Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR = REPO_ROOT / "docs"
@@ -55,21 +50,6 @@ else:
 WIDGET_TYPES = sorted(dict.fromkeys(filter(None, WIDGET_TYPES)))
 WIDGET_DOC_MAP = {widget.get("type"): widget for widget in WIDGETS_DATA if isinstance(widget.get("type"), str)}
 TEMPLATES = REFERENCE_DATA.get("templates", [])
-
-
-# ---------------------------------------------------------------------------
-# Structure helpers
-# ---------------------------------------------------------------------------
-
-
-def _ordered_copy(value: Any) -> Any:
-    """Recursively convert mappings to OrderedDict instances."""
-
-    if isinstance(value, dict):
-        return OrderedDict((key, _ordered_copy(val)) for key, val in value.items())
-    if isinstance(value, list):
-        return [_ordered_copy(item) for item in value]
-    return value
 
 
 # ---------------------------------------------------------------------------
@@ -128,175 +108,6 @@ def to_yaml(value: Any, indent: int = 0) -> str:
 # ---------------------------------------------------------------------------
 
 
-class ValueDialog(simpledialog.Dialog):
-    """Modal dialog that captures a scalar/list/dict value (and optional key)."""
-
-    TYPE_CHOICES = [
-        ("Text", "string"),
-        ("Integer", "integer"),
-        ("Float", "float"),
-        ("Boolean", "boolean"),
-        ("Null", "null"),
-        ("Dictionary", "dict"),
-        ("List", "list"),
-    ]
-    LABEL_TO_VALUE = {label: value for label, value in TYPE_CHOICES}
-    VALUE_TO_LABEL = {value: label for label, value in TYPE_CHOICES}
-
-    def __init__(
-        self,
-        master: tk.Widget,
-        title: str,
-        allow_key_edit: bool = False,
-        initial_key: str = "",
-        initial_value: Any = "",
-    ) -> None:
-        self.allow_key_edit = allow_key_edit
-        self.initial_key = initial_key
-        self.initial_value = initial_value
-        self.result_data: Optional[Tuple[Optional[str], Any]] = None
-        super().__init__(master, title)
-
-    def body(self, master: tk.Widget) -> tk.Widget:
-        row = 0
-        if self.allow_key_edit:
-            ttk.Label(master, text="Key").grid(row=row, column=0, sticky="w", padx=6, pady=(6, 2))
-            self.key_var = tk.StringVar(value=self.initial_key)
-            self.key_entry = ttk.Entry(master, textvariable=self.key_var, width=32)
-            self.key_entry.grid(row=row + 1, column=0, sticky="we", padx=6)
-            row += 2
-        else:
-            self.key_var = tk.StringVar(value="")
-            self.key_entry = None
-
-        ttk.Label(master, text="Value type").grid(row=row, column=0, sticky="w", padx=6, pady=(6, 2))
-        self.type_var = tk.StringVar()
-        type_combo = ttk.Combobox(
-            master,
-            textvariable=self.type_var,
-            state="readonly",
-            values=[label for label, _ in self.TYPE_CHOICES],
-        )
-        type_combo.grid(row=row + 1, column=0, sticky="we", padx=6)
-
-        row += 2
-        ttk.Label(master, text="Value (leave empty for dict/list/null)").grid(
-            row=row,
-            column=0,
-            sticky="w",
-            padx=6,
-            pady=(6, 2),
-        )
-        self.value_var = tk.StringVar()
-        self.value_entry = ttk.Entry(master, textvariable=self.value_var, width=32)
-        self.value_entry.grid(row=row + 1, column=0, sticky="we", padx=6, pady=(0, 6))
-
-        self.error_var = tk.StringVar(value="")
-        ttk.Label(master, textvariable=self.error_var, foreground="red", wraplength=280).grid(
-            row=row + 2, column=0, sticky="we", padx=6, pady=(0, 6)
-        )
-
-        self.columnconfigure(0, weight=1)
-        master.columnconfigure(0, weight=1)
-
-        initial_type = self._infer_type(self.initial_value)
-        self.type_var.set(self.VALUE_TO_LABEL.get(initial_type, "Text"))
-        self._apply_initial_value(initial_type)
-        self.type_var.trace_add("write", self._on_type_change)
-        return self.key_entry or type_combo
-
-    def validate(self) -> bool:  # pragma: no cover - Tkinter tool
-        key = self.key_var.get().strip()
-        if self.allow_key_edit and not key:
-            self.error_var.set("Key is required for dictionary entries.")
-            return False
-
-        selected_label = self.type_var.get()
-        value_type = self.LABEL_TO_VALUE.get(selected_label)
-        if not value_type:
-            self.error_var.set("Choose a value type.")
-            return False
-
-        try:
-            value = self._parse_value(value_type)
-        except ValueError as exc:
-            self.error_var.set(str(exc))
-            return False
-
-        self.result_data = (key if self.allow_key_edit else None, value)
-        self.error_var.set("")
-        return True
-
-    def apply(self) -> None:  # pragma: no cover - Tkinter tool
-        self.result = self.result_data
-
-    def _on_type_change(self, *_: Any) -> None:
-        selected_label = self.type_var.get()
-        value_type = self.LABEL_TO_VALUE.get(selected_label, "string")
-        if value_type in {"dict", "list", "null"}:
-            self.value_entry.configure(state=tk.DISABLED)
-            if value_type == "null":
-                self.value_var.set("null")
-            else:
-                self.value_var.set("")
-        else:
-            self.value_entry.configure(state=tk.NORMAL)
-            if value_type == "boolean" and not self.value_var.get():
-                self.value_var.set("true")
-
-    @staticmethod
-    def _infer_type(value: Any) -> str:
-        if isinstance(value, bool):
-            return "boolean"
-        if isinstance(value, int) and not isinstance(value, bool):
-            return "integer"
-        if isinstance(value, float):
-            return "float"
-        if value is None:
-            return "null"
-        if isinstance(value, dict):
-            return "dict"
-        if isinstance(value, list):
-            return "list"
-        return "string"
-
-    def _apply_initial_value(self, inferred_type: str) -> None:
-        if inferred_type in {"dict", "list", "null"}:
-            self.value_entry.configure(state=tk.DISABLED)
-            if inferred_type == "null":
-                self.value_var.set("null")
-            else:
-                self.value_var.set("")
-        else:
-            if inferred_type == "boolean":
-                self.value_var.set("true" if self.initial_value else "false")
-            else:
-                self.value_var.set("" if self.initial_value is None else str(self.initial_value))
-
-    def _parse_value(self, value_type: str) -> Any:
-        text = self.value_var.get()
-        if value_type == "string":
-            return text
-        if value_type == "integer":
-            return int(text)
-        if value_type == "float":
-            return float(text)
-        if value_type == "boolean":
-            lowered = text.strip().lower()
-            if lowered in {"true", "1", "yes"}:
-                return True
-            if lowered in {"false", "0", "no"}:
-                return False
-            raise ValueError("Boolean values must be true/false (or 1/0).")
-        if value_type == "null":
-            return None
-        if value_type == "dict":
-            return OrderedDict()
-        if value_type == "list":
-            return []
-        raise ValueError("Unsupported value type.")
-
-
 class WidgetDialog(tk.Toplevel):
     def __init__(self, master: tk.Widget, widget: Optional[Dict[str, Any]] = None):
         super().__init__(master)
@@ -318,52 +129,29 @@ class WidgetDialog(tk.Toplevel):
         self.title_var = tk.StringVar(value=widget.get("title", "") if widget else "")
         ttk.Entry(self, textvariable=self.title_var, width=30).grid(row=4, column=0, padx=8, sticky="we")
 
-        ttk.Label(
+        tk.Label(
             self,
             text=(
-                "Widget options editor: add nested dictionaries/lists to match the docs.\n"
-                "Use the buttons below to add siblings or drill into sub-options (e.g., bookmarks → groups → links)."
+                "Extra options as key=value pairs, one per line.\n"
+                "Examples include `location=London, United Kingdom` for weather widgets\n"
+                "or `limit=10`/`cache=12h` for feeds as described in docs/configuration.md."
             ),
             justify="left",
-            wraplength=360,
+            wraplength=320,
         ).grid(row=5, column=0, sticky="we", padx=8, pady=(10, 2))
 
-        tree_container = ttk.Frame(self)
-        tree_container.grid(row=6, column=0, padx=8, pady=(0, 6), sticky="nsew")
-        self.rowconfigure(6, weight=1)
-        tree_container.rowconfigure(0, weight=1)
-        tree_container.columnconfigure(0, weight=1)
-
-        columns = ("value",)
-        self.options_tree = ttk.Treeview(tree_container, columns=columns, show="tree headings", height=8)
-        self.options_tree.heading("#0", text="Option")
-        self.options_tree.heading("value", text="Value / summary")
-        self.options_tree.column("#0", stretch=True)
-        self.options_tree.column("value", stretch=True)
-        tree_scroll = ttk.Scrollbar(tree_container, orient=tk.VERTICAL, command=self.options_tree.yview)
-        self.options_tree.configure(yscrollcommand=tree_scroll.set)
-        self.options_tree.grid(row=0, column=0, sticky="nsew")
-        tree_scroll.grid(row=0, column=1, sticky="ns")
-
-        button_row = ttk.Frame(self)
-        button_row.grid(row=7, column=0, pady=(0, 6), padx=8, sticky="we")
-        ttk.Button(button_row, text="Add option", command=self.add_option).pack(side=tk.LEFT, padx=2)
-        ttk.Button(button_row, text="Add child", command=self.add_child_option).pack(side=tk.LEFT, padx=2)
-        ttk.Button(button_row, text="Edit", command=self.edit_option).pack(side=tk.LEFT, padx=2)
-        ttk.Button(button_row, text="Delete", command=self.delete_option).pack(side=tk.LEFT, padx=2)
-
-        self.extra_data: OrderedDict[str, Any] = OrderedDict()
+        self.options_text = tk.Text(self, width=40, height=6)
         if widget:
-            for key, value in widget.items():
+            extras = []
+            for key, val in widget.items():
                 if key in {"type", "title"}:
                     continue
-                self.extra_data[key] = _ordered_copy(value)
-
-        self.tree_paths: Dict[str, List[Any]] = {}
-        self._refresh_options_tree()
+                extras.append(f"{key}={val}")
+            self.options_text.insert("1.0", "\n".join(extras))
+        self.options_text.grid(row=6, column=0, padx=8, pady=(0, 10))
 
         button_frame = tk.Frame(self)
-        button_frame.grid(row=8, column=0, pady=(0, 10))
+        button_frame.grid(row=7, column=0, pady=(0, 10))
         ttk.Button(button_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT, padx=4)
         ttk.Button(button_frame, text="Save", command=self._on_save).pack(side=tk.RIGHT, padx=4)
 
@@ -382,171 +170,21 @@ class WidgetDialog(tk.Toplevel):
         if title:
             data["title"] = title
 
-        for key, value in self.extra_data.items():
-            data[key] = value
+        extra_text = self.options_text.get("1.0", tk.END).strip()
+        if extra_text:
+            for line in extra_text.splitlines():
+                if not line.strip():
+                    continue
+                if "=" not in line:
+                    messagebox.showerror(
+                        "Invalid option",
+                        "Each option must use the key=value format (see docs/configuration.md shared widget properties).",
+                    )
+                    return
+                key, value = line.split("=", 1)
+                data[key.strip()] = value.strip()
         self.widget_data = data
         self.destroy()
-
-    # ------------------------------------------------------------------
-    # Option tree helpers
-    # ------------------------------------------------------------------
-
-    def _refresh_options_tree(self) -> None:
-        self.tree_paths.clear()
-        for item in self.options_tree.get_children():
-            self.options_tree.delete(item)
-        for key, value in self.extra_data.items():
-            self._insert_option_node("", key, value, [key])
-
-    def _insert_option_node(self, parent: str, label: Any, value: Any, path: List[Any]) -> None:
-        display = self._summarize_value(value)
-        item_id = self.options_tree.insert(parent, "end", text=str(label), values=(display,))
-        self.tree_paths[item_id] = list(path)
-        if isinstance(value, dict):
-            for child_key, child_value in value.items():
-                self._insert_option_node(item_id, child_key, child_value, path + [child_key])
-        elif isinstance(value, list):
-            for idx, child_value in enumerate(value):
-                self._insert_option_node(item_id, f"[{idx}]", child_value, path + [idx])
-
-    @staticmethod
-    def _summarize_value(value: Any) -> str:
-        if isinstance(value, dict):
-            return f"<dict> ({len(value)} keys)"
-        if isinstance(value, list):
-            return f"<list> ({len(value)} items)"
-        if value is None:
-            return "null"
-        return str(value)
-
-    def _get_value_from_path(self, path: List[Any]) -> Any:
-        current: Any = self.extra_data
-        for segment in path:
-            current = current[segment]
-        return current
-
-    def _get_parent_info(self, path: List[Any]) -> Tuple[Optional[Any], Optional[List[Any]], Optional[Any]]:
-        if not path:
-            return None, None, None
-        parent_path = path[:-1]
-        parent: Any = self.extra_data
-        for segment in parent_path:
-            parent = parent[segment]
-        return parent, parent_path, path[-1]
-
-    def add_option(self) -> None:
-        selection = self.options_tree.selection()
-        if not selection:
-            container: Any = self.extra_data
-        else:
-            path = self.tree_paths[selection[0]]
-            value = self._get_value_from_path(path)
-            if isinstance(value, (dict, list)):
-                container = value
-            else:
-                parent, _, _ = self._get_parent_info(path)
-                container = parent if parent is not None else self.extra_data
-
-        self._add_to_container(container)
-
-    def add_child_option(self) -> None:
-        selection = self.options_tree.selection()
-        if not selection:
-            messagebox.showinfo("Select option", "Select a dictionary or list to add children to.")
-            return
-        path = self.tree_paths[selection[0]]
-        value = self._get_value_from_path(path)
-        if not isinstance(value, (dict, list)):
-            messagebox.showerror("Invalid selection", "You can only add children to dictionaries or lists.")
-            return
-        self._add_to_container(value)
-
-    def _add_to_container(self, container: Any) -> None:
-        if isinstance(container, dict):
-            dialog = ValueDialog(self, "Add option", allow_key_edit=True)
-            self.wait_window(dialog)
-            if not dialog.result_data:
-                return
-            key, value = dialog.result_data
-            assert key is not None
-            if key in container:
-                messagebox.showerror("Duplicate key", f"'{key}' already exists at this level.")
-                return
-            container[key] = value
-        elif isinstance(container, list):
-            dialog = ValueDialog(self, "Add list item", allow_key_edit=False)
-            self.wait_window(dialog)
-            if not dialog.result_data:
-                return
-            _, value = dialog.result_data
-            container.append(value)
-        else:
-            return
-        self._refresh_options_tree()
-
-    def edit_option(self) -> None:
-        selection = self.options_tree.selection()
-        if not selection:
-            return
-        path = self.tree_paths[selection[0]]
-        value = self._get_value_from_path(path)
-        parent, _, key = self._get_parent_info(path)
-        if parent is None:
-            # Top-level entry in the root dict
-            parent = self.extra_data
-            key = path[0]
-        allow_key = isinstance(parent, dict)
-        dialog = ValueDialog(
-            self,
-            "Edit option",
-            allow_key_edit=allow_key,
-            initial_key=str(key) if allow_key else "",
-            initial_value=value,
-        )
-        self.wait_window(dialog)
-        if not dialog.result_data:
-            return
-        new_key, new_value = dialog.result_data
-        if isinstance(parent, dict) and key is not None:
-            new_key = key if new_key is None else new_key
-            if new_key != key and new_key in parent:
-                messagebox.showerror("Duplicate key", f"'{new_key}' already exists at this level.")
-                return
-            self._replace_dict_key(parent, key, new_key, new_value)
-        elif isinstance(parent, list) and isinstance(key, int):
-            parent[key] = new_value
-        else:
-            return
-        self._refresh_options_tree()
-
-    @staticmethod
-    def _replace_dict_key(container: Dict[Any, Any], old_key: Any, new_key: Any, new_value: Any) -> None:
-        new_items = []
-        for existing_key, existing_value in container.items():
-            if existing_key == old_key:
-                new_items.append((new_key, new_value))
-            else:
-                new_items.append((existing_key, existing_value))
-        container.clear()
-        for k, v in new_items:
-            container[k] = v
-
-    def delete_option(self) -> None:
-        selection = self.options_tree.selection()
-        if not selection:
-            return
-        path = self.tree_paths[selection[0]]
-        parent, _, key = self._get_parent_info(path)
-        if parent is None:
-            parent = self.extra_data
-            key = path[0]
-        if isinstance(parent, dict) and key in parent:
-            del parent[key]
-        elif isinstance(parent, list) and isinstance(key, int) and 0 <= key < len(parent):
-            parent.pop(key)
-        else:
-            return
-        self._refresh_options_tree()
 
 
 class ColumnDialog(tk.Toplevel):
@@ -668,10 +306,8 @@ class TkYankMaker(tk.Tk):
         self.preview_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
         self.preview_text.configure(state=tk.DISABLED)
 
-        button_bar = ttk.Frame(preview_frame)
-        button_bar.pack(fill=tk.X, padx=6, pady=(0, 6))
-        ttk.Button(button_bar, text="Load YAML", command=self.load_yaml).pack(side=tk.LEFT)
-        ttk.Button(button_bar, text="Save YAML", command=self.save_yaml).pack(side=tk.RIGHT)
+        save_button = ttk.Button(preview_frame, text="Save YAML", command=self.save_yaml)
+        save_button.pack(anchor="e", padx=6, pady=(0, 6))
 
     def _build_docs_tab(self, parent: ttk.Frame) -> None:
         docs_notebook = ttk.Notebook(parent)
@@ -1002,42 +638,6 @@ class TkYankMaker(tk.Tk):
     # ------------------------------------------------------------------
     # Preview + save
     # ------------------------------------------------------------------
-    def load_yaml(self) -> None:
-        if yaml is None:
-            messagebox.showerror(
-                "PyYAML not installed",
-                "Loading YAML requires the PyYAML package. Install it (pip install pyyaml) and try again.",
-            )
-            return
-        path = filedialog.askopenfilename(filetypes=[("YAML", "*.yml"), ("YAML", "*.yaml"), ("All files", "*")])
-        if not path:
-            return
-        try:
-            content = Path(path).read_text(encoding="utf-8")
-        except OSError as exc:
-            messagebox.showerror("Unable to read file", str(exc))
-            return
-        try:
-            data = yaml.safe_load(content) or {}
-        except Exception as exc:  # pragma: no cover - Tkinter tool
-            messagebox.showerror("Invalid YAML", f"Could not parse YAML: {exc}")
-            return
-        if not isinstance(data, dict):
-            messagebox.showerror("Invalid configuration", "Expected a dictionary at the YAML root.")
-            return
-        pages_data = data.get("pages")
-        if not isinstance(pages_data, list):
-            messagebox.showerror("Missing pages", "The YAML file must contain a top-level 'pages' list.")
-            return
-
-        self.pages = self._normalize_pages(pages_data)
-        self.refresh_pages()
-        if self.pages:
-            self.pages_list.selection_clear(0, tk.END)
-            self.pages_list.selection_set(0)
-            self.refresh_columns()
-        messagebox.showinfo("Loaded", f"Loaded {len(self.pages)} page(s) from {path}")
-
     def update_preview(self) -> None:
         config = {"pages": self.pages}
         yaml_text = to_yaml(config)
@@ -1055,42 +655,6 @@ class TkYankMaker(tk.Tk):
             return
         Path(path).write_text(self.preview_text.get("1.0", tk.END).strip() + "\n", encoding="utf-8")
         messagebox.showinfo("Saved", f"Configuration saved to {path}")
-
-    @staticmethod
-    def _normalize_pages(pages: List[Any]) -> List[Dict[str, Any]]:
-        normalized: List[Dict[str, Any]] = []
-        for page in pages:
-            if not isinstance(page, dict):
-                continue
-            page_copy: Dict[str, Any] = OrderedDict()
-            for key, value in page.items():
-                if key == "columns":
-                    continue
-                page_copy[key] = _ordered_copy(value)
-            columns_list: List[Dict[str, Any]] = []
-            columns = page.get("columns")
-            if isinstance(columns, list):
-                for column in columns:
-                    if not isinstance(column, dict):
-                        continue
-                    column_copy: Dict[str, Any] = OrderedDict()
-                    for key, value in column.items():
-                        if key == "widgets":
-                            continue
-                        column_copy[key] = _ordered_copy(value)
-                    widgets: List[Dict[str, Any]] = []
-                    raw_widgets = column.get("widgets")
-                    if isinstance(raw_widgets, list):
-                        for widget in raw_widgets:
-                            if isinstance(widget, dict):
-                                widgets.append(_ordered_copy(widget))
-                    column_copy.setdefault("size", column.get("size", "small"))
-                    column_copy["widgets"] = widgets
-                    columns_list.append(column_copy)
-            page_copy.setdefault("name", page.get("name", "Page"))
-            page_copy["columns"] = columns_list
-            normalized.append(page_copy)
-        return normalized
 
 
 def main() -> None:
