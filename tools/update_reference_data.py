@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import textwrap
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR = REPO_ROOT / "docs"
 CONFIG_DOC = DOCS_DIR / "configuration.md"
 PRECONFIG_DOC = DOCS_DIR / "preconfigured-pages.md"
 OUTPUT_PATH = DOCS_DIR / "reference_data.json"
-GO_YAML_HELPER = REPO_ROOT / "tools" / "yaml_to_json.go"
 
 
 def extract_widgets() -> List[Dict[str, Any]]:
@@ -39,15 +37,13 @@ def extract_widgets() -> List[Dict[str, Any]]:
         if not type_match:
             continue
         widget_type = type_match.group(1).strip()
-        widget_entry: Dict[str, Any] = {
-            "name": match.group("name").strip(),
-            "type": widget_type,
-            "markdown": body,
-        }
-        example = extract_example_widget(body, widget_type)
-        if example is not None:
-            widget_entry["example"] = example
-        widgets.append(widget_entry)
+        widgets.append(
+            {
+                "name": match.group("name").strip(),
+                "type": widget_type,
+                "markdown": body,
+            }
+        )
 
     seen: Dict[str, Dict[str, Any]] = {}
     for widget in widgets:
@@ -85,57 +81,6 @@ def extract_templates() -> List[Dict[str, Any]]:
             }
         )
     return templates
-
-
-def extract_example_widget(body: str, expected_type: str) -> Optional[Dict[str, Any]]:
-    code_match = re.search(r"```(?:yaml|yml)(.*?)```", body, re.S | re.I)
-    if not code_match:
-        return None
-    snippet = textwrap.dedent(code_match.group(1)).strip()
-    if not snippet:
-        return None
-    parsed = parse_yaml_snippet(snippet)
-    if parsed is None:
-        return None
-    return find_widget_with_type(parsed, expected_type)
-
-
-def parse_yaml_snippet(snippet: str) -> Optional[Any]:
-    if not GO_YAML_HELPER.exists():
-        return None
-    try:
-        result = subprocess.run(
-            ["go", "run", str(GO_YAML_HELPER)],
-            input=snippet,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
-
-
-def find_widget_with_type(node: Any, expected_type: str) -> Optional[Dict[str, Any]]:
-    if isinstance(node, dict):
-        node_type = node.get("type")
-        if isinstance(node_type, str) and node_type.strip() == expected_type:
-            return node
-        for value in node.values():
-            match = find_widget_with_type(value, expected_type)
-            if match is not None:
-                return match
-    elif isinstance(node, list):
-        for item in node:
-            match = find_widget_with_type(item, expected_type)
-            if match is not None:
-                return match
-    return None
 
 
 def main() -> None:
